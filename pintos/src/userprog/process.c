@@ -17,6 +17,14 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
+
+struct exec_helper {
+  char *file_name;
+  struct child_info *info;
+  struct semaphore load_sema;
+  bool load_success;
+};
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -26,148 +34,140 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *file_name)
 {
-  /* 1. TÜM DEĞİŞKENLER EN TEPEDE TANIMLANMALI (C89 Kuralı) */
   char *fn_copy;
-  char *name_copy;
-  char *thread_name_ptr; /* İsim çakışmasını önlemek için _ptr ekledik */
-  char *save_ptr;
   tid_t tid;
 
-  /* 2. İŞLEMLER BURADAN İTİBAREN BAŞLAR */
-  
-  /* start_process'e gidecek olan tam metin kopyası */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Sadece program adını ayıklamak için geçici kopya */
-  name_copy = palloc_get_page (0);
-  if (name_copy == NULL) 
+  struct child_info *info = malloc (sizeof (struct child_info));
+  if (info == NULL)
     {
       palloc_free_page (fn_copy);
       return TID_ERROR;
     }
+  info->exit_status = -1;
+  info->exited = false;
+  info->waited = false;
+  sema_init (&info->exit_sema, 0);
+  list_push_back (&thread_current ()->children, &info->elem);
+
+  char *name_copy = palloc_get_page (0);
+  if (name_copy == NULL)
+    {
+      palloc_free_page (fn_copy);
+      free (info);
+      return TID_ERROR;
+    }
   strlcpy (name_copy, file_name, PGSIZE);
+  char *save_ptr;
+  char *prog_name = strtok_r (name_copy, " ", &save_ptr);
 
-  /* strtok_r ile program adını (ilk kelimeyi) al */
-  thread_name_ptr = strtok_r (name_copy, " ", &save_ptr);
+  struct exec_helper *helper = malloc (sizeof (struct exec_helper));
+  if (helper == NULL)
+    {
+      palloc_free_page (fn_copy);
+      palloc_free_page (name_copy);
+      list_remove (&info->elem);
+      free (info);
+      return TID_ERROR;
+    }
+  helper->file_name = fn_copy;
+  helper->info = info;
+  sema_init (&helper->load_sema, 0);
+  helper->load_success = false;
 
-  /* Artık ayıklanmış ismi (thread_name_ptr) kullanıyoruz */
-  tid = thread_create (thread_name_ptr, PRI_DEFAULT, start_process, fn_copy);
-  
-  /* Geçici isme ihtiyacımız kalmadı, belleği temizle */
+  tid = thread_create (prog_name, PRI_DEFAULT, start_process, helper);
   palloc_free_page (name_copy);
 
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    {
+      palloc_free_page (fn_copy);
+      list_remove (&info->elem);
+      free (info);
+      free (helper);
+      return TID_ERROR;
+    }
 
+  info->tid = tid;
+
+  sema_down (&helper->load_sema);
+  if (!helper->load_success)
+    {
+      list_remove (&info->elem);
+      free (info);
+      free (helper);
+      return TID_ERROR;
+    }
+
+  free (helper);
   return tid;
 }
 
-
-/* A thread function that loads a user process and starts it
-   running. */
 static void
-start_process (void *file_name_)
+start_process (void *helper_)
 {
-  char *file_name = file_name_;
+  struct exec_helper *helper = (struct exec_helper *) helper_;
+  char *file_name = helper->file_name;
   struct intr_frame if_;
   bool success;
 
-  /* ---- EKLENEN DEĞİŞKENLER ---- */
-  char *argv[128]; /* Argümanları tutacak dizi */
-  int argc = 0;
-  char *token, *save_ptr;
-  /* ----------------------------- */
+  struct thread *cur = thread_current ();
+  cur->my_info = helper->info;
 
-  /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
+  success = load (file_name, &if_.eip, &if_.esp);
 
-  /* 1. GELEN METNİ BOŞLUKLARDAN AYIR */
-  for (token = strtok_r (file_name, " ", &save_ptr); token != NULL;
-       token = strtok_r (NULL, " ", &save_ptr))
-    {
-      argv[argc++] = token;
-    }
-
-  /* 2. SADECE PROGRAM ADINI (argv[0]) YÜKLE */
-  success = load (argv[0], &if_.eip, &if_.esp);
-
-  /* 3. YÜKLEME BAŞARILIYSA YIĞINI (STACK) KUR */
-  if (success) 
-    {
-      int i;
-      
-      /* Aşama A: Karakter dizilerini sağdan sola yığına it */
-      for (i = argc - 1; i >= 0; i--) 
-        {
-          size_t len = strlen(argv[i]) + 1; /* \0 karakteri için +1 */
-          if_.esp -= len;
-          memcpy(if_.esp, argv[i], len);
-          argv[i] = if_.esp; /* Stringin bellekteki yeni adresini kaydet */
-        }
-
-      /* Aşama B: Kelime hizalama (Word-align) - 4'ün katlarına yuvarla */
-      uint8_t word_align = (uint32_t) if_.esp % 4;
-      if_.esp -= word_align;
-      memset(if_.esp, 0, word_align);
-
-      /* Aşama C: argv[argc] için Null Pointer (0) it */
-      if_.esp -= sizeof(char *);
-      *(char **) if_.esp = NULL;
-
-      /* Aşama D: Argümanların bellek adreslerini sağdan sola it */
-      for (i = argc - 1; i >= 0; i--) 
-        {
-          if_.esp -= sizeof(char *);
-          *(char **) if_.esp = argv[i];
-        }
-
-      /* Aşama E: argv başlangıç adresini ve argc'yi it */
-      char *argv_addr = if_.esp; 
-      if_.esp -= sizeof(char **);
-      *(char ***) if_.esp = (char **) argv_addr;
-
-      if_.esp -= sizeof(int);
-      *(int *) if_.esp = argc;
-
-      /* Aşama F: Sahte geri dönüş adresi (0) */
-      if_.esp -= sizeof(void *);
-      *(void **) if_.esp = NULL;
-      
-      /* İPUCU: Yığının son halini görmek için hex_dump'ı açabilirsin */
-      // hex_dump((uintptr_t)if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
-    }
-
-  /* İşimiz biten bellek alanını temizle */
   palloc_free_page (file_name);
-  if (!success) 
+
+  helper->load_success = success;
+  sema_up (&helper->load_sema);
+
+  if (!success)
     thread_exit ();
 
-  /* Start the user process by simulating a return from an interrupt... */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
 
-/* Waits for thread TID to die and returns its exit status.  If
-   it was terminated by the kernel (i.e. killed due to an
-   exception), returns -1.  If TID is invalid or if it was not a
-   child of the calling process, or if process_wait() has already
-   been successfully called for the given TID, returns -1
-   immediately, without waiting.
 
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid)
 {
-  return -1;
+  struct thread *cur = thread_current ();
+  struct child_info *info = NULL;
+  struct list_elem *e;
+
+  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+       e = list_next (e))
+    {
+      struct child_info *ci = list_entry (e, struct child_info, elem);
+      if (ci->tid == child_tid)
+        {
+          info = ci;
+          break;
+        }
+    }
+
+  if (info == NULL || info->waited)
+    return -1;
+
+  info->waited = true;
+
+  if (!info->exited)
+    sema_down (&info->exit_sema);
+
+  int status = info->exit_status;
+  list_remove (&info->elem);
+  free (info);
+  return status;
 }
 
 /* Free the current process's resources. */
@@ -177,18 +177,39 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
-  pd = cur->pagedir;
-  if (pd != NULL) 
+  if (cur->executable != NULL)
     {
-      /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
-         so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
-         directory, or our active page directory will be one
-         that's been freed (and cleared). */
+      file_close (cur->executable);
+      cur->executable = NULL;
+    }
+
+  while (!list_empty (&cur->fd_list))
+    {
+      struct list_elem *e = list_pop_front (&cur->fd_list);
+      struct fd_entry *fde = list_entry (e, struct fd_entry, elem);
+      file_close (fde->file);
+      free (fde);
+    }
+
+  while (!list_empty (&cur->children))
+    {
+      struct list_elem *e = list_pop_front (&cur->children);
+      struct child_info *ci = list_entry (e, struct child_info, elem);
+      free (ci);
+    }
+
+  if (cur->my_info != NULL)
+    printf ("%s: exit(%d)\n", cur->name, cur->my_info->exit_status);
+
+  if (cur->my_info != NULL)
+    {
+      cur->my_info->exited = true;
+      sema_up (&cur->my_info->exit_sema);
+    }
+
+  pd = cur->pagedir;
+  if (pd != NULL)
+    {
       cur->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);

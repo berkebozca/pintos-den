@@ -151,6 +151,22 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
+  if (!user)
+    {
+      struct thread *cur = thread_current ();
+      if (cur->my_info != NULL)
+        cur->my_info->exit_status = -1;
+      thread_exit ();
+    }
+
+  if (!user)
+    {
+      struct thread *cur = thread_current ();
+      if (cur->my_info != NULL)
+        cur->my_info->exit_status = -1;
+      thread_exit ();
+    }
+
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",

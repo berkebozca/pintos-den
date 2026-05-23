@@ -182,6 +182,9 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+#ifdef USERPROG
+  t->parent = thread_current ();
+#endif
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -462,6 +465,13 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+#ifdef USERPROG
+  t->executable = NULL;
+  list_init (&t->children);
+  list_init (&t->fd_list);
+  t->next_fd = 2;
+  t->my_info = NULL;
+#endif
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();
