@@ -28,22 +28,45 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
+  /* 1. TÜM DEĞİŞKENLER EN TEPEDE TANIMLANMALI (C89 Kuralı) */
   char *fn_copy;
+  char *name_copy;
+  char *thread_name_ptr; /* İsim çakışmasını önlemek için _ptr ekledik */
+  char *save_ptr;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
-     Otherwise there's a race between the caller and load(). */
+  /* 2. İŞLEMLER BURADAN İTİBAREN BAŞLAR */
+  
+  /* start_process'e gidecek olan tam metin kopyası */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* Sadece program adını ayıklamak için geçici kopya */
+  name_copy = palloc_get_page (0);
+  if (name_copy == NULL) 
+    {
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+  strlcpy (name_copy, file_name, PGSIZE);
+
+  /* strtok_r ile program adını (ilk kelimeyi) al */
+  thread_name_ptr = strtok_r (name_copy, " ", &save_ptr);
+
+  /* Artık ayıklanmış ismi (thread_name_ptr) kullanıyoruz */
+  tid = thread_create (thread_name_ptr, PRI_DEFAULT, start_process, fn_copy);
+  
+  /* Geçici isme ihtiyacımız kalmadı, belleği temizle */
+  palloc_free_page (name_copy);
+
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
+
   return tid;
 }
+
 
 /* A thread function that loads a user process and starts it
    running. */
@@ -54,24 +77,80 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
 
+  /* ---- EKLENEN DEĞİŞKENLER ---- */
+  char *argv[128]; /* Argümanları tutacak dizi */
+  int argc = 0;
+  char *token, *save_ptr;
+  /* ----------------------------- */
+
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
+  /* 1. GELEN METNİ BOŞLUKLARDAN AYIR */
+  for (token = strtok_r (file_name, " ", &save_ptr); token != NULL;
+       token = strtok_r (NULL, " ", &save_ptr))
+    {
+      argv[argc++] = token;
+    }
+
+  /* 2. SADECE PROGRAM ADINI (argv[0]) YÜKLE */
+  success = load (argv[0], &if_.eip, &if_.esp);
+
+  /* 3. YÜKLEME BAŞARILIYSA YIĞINI (STACK) KUR */
+  if (success) 
+    {
+      int i;
+      
+      /* Aşama A: Karakter dizilerini sağdan sola yığına it */
+      for (i = argc - 1; i >= 0; i--) 
+        {
+          size_t len = strlen(argv[i]) + 1; /* \0 karakteri için +1 */
+          if_.esp -= len;
+          memcpy(if_.esp, argv[i], len);
+          argv[i] = if_.esp; /* Stringin bellekteki yeni adresini kaydet */
+        }
+
+      /* Aşama B: Kelime hizalama (Word-align) - 4'ün katlarına yuvarla */
+      uint8_t word_align = (uint32_t) if_.esp % 4;
+      if_.esp -= word_align;
+      memset(if_.esp, 0, word_align);
+
+      /* Aşama C: argv[argc] için Null Pointer (0) it */
+      if_.esp -= sizeof(char *);
+      *(char **) if_.esp = NULL;
+
+      /* Aşama D: Argümanların bellek adreslerini sağdan sola it */
+      for (i = argc - 1; i >= 0; i--) 
+        {
+          if_.esp -= sizeof(char *);
+          *(char **) if_.esp = argv[i];
+        }
+
+      /* Aşama E: argv başlangıç adresini ve argc'yi it */
+      char *argv_addr = if_.esp; 
+      if_.esp -= sizeof(char **);
+      *(char ***) if_.esp = (char **) argv_addr;
+
+      if_.esp -= sizeof(int);
+      *(int *) if_.esp = argc;
+
+      /* Aşama F: Sahte geri dönüş adresi (0) */
+      if_.esp -= sizeof(void *);
+      *(void **) if_.esp = NULL;
+      
+      /* İPUCU: Yığının son halini görmek için hex_dump'ı açabilirsin */
+      // hex_dump((uintptr_t)if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
+    }
+
+  /* İşimiz biten bellek alanını temizle */
   palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
 
-  /* Start the user process by simulating a return from an
-     interrupt, implemented by intr_exit (in
-     threads/intr-stubs.S).  Because intr_exit takes all of its
-     arguments on the stack in the form of a `struct intr_frame',
-     we just point the stack pointer (%esp) to our stack frame
-     and jump to it. */
+  /* Start the user process by simulating a return from an interrupt... */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
