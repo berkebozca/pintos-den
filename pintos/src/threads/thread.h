@@ -102,7 +102,8 @@ struct thread
     struct list children;               /* List of child_info. */
     struct list fd_list;                /* List of open file descriptors. */
     int next_fd;                        /* Next fd number to assign. */
-    struct child_info *my_info;         /* This thread's info for parent. */
+    struct child_info *my_info;       /* This thread's info for parent. */
+    int exit_status;              /* Exit status of this thread. */
 #endif
 
     /* Owned by thread.c. */
