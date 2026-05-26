@@ -151,20 +151,19 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-  if (!user)
+ /* Kullanıcı geçersiz belleğe erişti, process'i sonlandır */
+  if (user)
     {
-      struct thread *cur = thread_current ();
-      if (cur->my_info != NULL)
-        cur->my_info->exit_status = -1;
+      thread_current ()->exit_status = -1;
       thread_exit ();
     }
 
+  /* Kernel'dan geçersiz erişim */
   if (!user)
     {
-      struct thread *cur = thread_current ();
-      if (cur->my_info != NULL)
-        cur->my_info->exit_status = -1;
-      thread_exit ();
+      f->eip = (void (*) (void)) f->eax;
+      f->eax = 0xffffffff;
+      return;
     }
 
   printf ("Page fault at %p: %s error %s page in %s context.\n",
@@ -173,5 +172,3 @@ page_fault (struct intr_frame *f)
           write ? "writing" : "reading",
           user ? "user" : "kernel");
   kill (f);
-}
-
