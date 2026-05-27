@@ -84,7 +84,7 @@ get_fd_entry (int fd)
 static void
 syscall_handler (struct intr_frame *f)
 {
-  check_ptr (f->esp);
+  check_buf (f->esp, 4);
   int syscall_num = *(int *) f->esp;
 
   switch (syscall_num)
