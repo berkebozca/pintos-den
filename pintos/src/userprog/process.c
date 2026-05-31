@@ -113,6 +113,8 @@ start_process (void *helper_)
 {
   struct exec_helper *helper = (struct exec_helper *) helper_;
   char *file_name = helper->file_name;
+  char *args = palloc_get_page (0);
+  strlcpy (args, file_name, PGSIZE);
   struct intr_frame if_;
   bool success;
 
@@ -123,9 +125,49 @@ start_process (void *helper_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  /* Parse program name for load */
+  char *args_copy = palloc_get_page (0);
+  strlcpy (args_copy, file_name, PGSIZE);
+  char *save_ptr_load;
+  char *prog_name_only = strtok_r (args_copy, " ", &save_ptr_load);
 
+  success = load (prog_name_only, &if_.eip, &if_.esp);
+
+  palloc_free_page (args_copy);
   palloc_free_page (file_name);
+
+  if (success)
+    {
+      char *token, *save_ptr2;
+      int argc = 0;
+      char *argv[128];
+      char *argv_addr[128];
+      int i;
+      for (token = strtok_r (args, " ", &save_ptr2); token != NULL;
+           token = strtok_r (NULL, " ", &save_ptr2))
+        argv[argc++] = token;
+      for (i = argc - 1; i >= 0; i--)
+        {
+          if_.esp = (char *) if_.esp - (strlen (argv[i]) + 1);
+          memcpy (if_.esp, argv[i], strlen (argv[i]) + 1);
+          argv_addr[i] = if_.esp;
+        }
+      if_.esp = (void *) ((uintptr_t) if_.esp & ~3);
+      if_.esp = (char **) if_.esp - 1;
+      *(char **) if_.esp = NULL;
+      for (i = argc - 1; i >= 0; i--)
+        {
+          if_.esp = (char **) if_.esp - 1;
+          *(char **) if_.esp = argv_addr[i];
+        }
+      if_.esp = (char ***) if_.esp - 1;
+      *(char ***) if_.esp = (char **) ((char **) if_.esp + 1);
+      if_.esp = (int *) if_.esp - 1;
+      *(int *) if_.esp = argc;
+      if_.esp = (void **) if_.esp - 1;
+      *(void **) if_.esp = NULL;
+    }
+  palloc_free_page (args);
 
   helper->load_success = success;
   sema_up (&helper->load_sema);
@@ -328,7 +370,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
-
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -408,11 +449,15 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
 
+  /* Deny writes to running executable. */
+  file_deny_write (file);
+  t->executable = file;
   success = true;
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (!success)
+    file_close (file);
   return success;
 }
 
