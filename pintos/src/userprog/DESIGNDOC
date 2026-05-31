@@ -1,0 +1,194 @@
+
+---- GRUP ----
+
+>> Grup üyelerinizin isimlerini ve e-posta adreslerini doldurun.
+
+Berke Bozca <berke.bozca@ogr.deu.edu.tr>  
+Naciye Çağlar <naciye.caglar@ogr.deu.edu.tr>  
+Seval Tatar <seval.tatar@ogr.deu.edu.tr>
+
+---- AÇIKLAMA ----
+>> Pintos dokümantasyonu, ders kitabı, ders notları dışında
+>> başvurduğunu ve ders personeliz offline veya online kaynakları belirtin.
+ Ders notları, claude, ChatGPT plus, gemini
+                ARGÜMAN VERME
+               ================
+
+---- VERİ YAPILARI ----
+
+>> A1: Her yeni veya değiştirilen `struct' ya da `struct' üyesi, global veya statik değişken, `typedef' ya da
+>> enumerasyonun bildirimini buraya yapın. Her birinin amacını 25 kelimeyle açıklayın.
+CEVAP:
+Yeni struct veya değişken eklenmedi. Argüman ayrıştırma tamamen setup_stack fonksiyonu içinde yerel değişkenlerle yapıldı:
+
+char *argv[128] — argüman pointer dizisi
+char *arg_ptrs[128] — stack'e yazılan adresleri tutar
+int argc — argüman sayısı
+
+---- ALGORİTMALAR ----
+
+>> A2: Argüman ayrıştırmayı nasıl gerçekleştirdiğinizi kısaca açıklayın. 
+>> argv[] elemanlarının doğru sırada olmalarını nasıl sağlıyorsunuz?
+>> Yığın sayfasının taşmasını nasıl engelliyorsunuz?
+CEVAP:
+strtok_r fonksiyonu kullanılarak komut satırı boşluklardan ayrıştırılır ve argümanlar geçici olarak yerel bir argv[] dizisine alınır. Ardından, bu string'ler yığına (stack) ters sırada (son argümandan ilke doğru) kopyalanır ve her birinin yığındaki gerçek adresi arg_ptrs[] dizisine kaydedilir. Yığın işaretçisi 4'ün katlarına (word-align) hizalandıktan sonra sırasıyla; null sentinel (0), arg_ptrs[] işaretçileri (yine ters sırada), argv dizisinin taban adresi, argc değeri ve son olarak sahte dönüş adresi (fake return address - 0) yığına eklenir (push). C dilinin çağrı standartları (calling convention) gereği yapılan bu ters sırada yığına itme işlemi sayesinde, argv[0] elemanı bellekteki en düşük adreste konumlanır ve argümanlar doğru sırada okunur.
+
+Yığın taşmasını (stack overflow) engellemek için bellek sınırlarını koruyan argc >= 128 kontrolü yapılır ve limiti aşan ekstra argümanlar yok sayılır. Ayrıca, process_execute aşamasında komut satırı string'i geçici sayfaya kopyalanırken strlcpy ile PGSIZE (4 KB) kısıtlaması uygulandığı için, dışarıdan gelen verinin ayrılmış yığın sayfasını aşması mimari olarak en baştan önlenmiştir.
+
+---- GEREKÇE ----
+
+>> A3: Pintos neden strtok_r() fonksiyonunu implement ederken strtok() fonksiyonunu implement etmemiştir?
+CEVAP:
+Standart strtok fonksiyonu, ayrıştırma işleminin nerede kaldığını (iç durumunu) arka planda gizli ve statik bir değişkende tutar. Bu durum onu thread-safe (iş parçacığı güvenli) ve reentrant (yeniden girilebilir) olmaktan çıkarır. Pintos çok iş parçacıklı (multi-threaded) bir işletim sistemi çekirdeği olduğundan, iki farklı thread (iş parçacığı) aynı anda veya biri diğerini kesintiye uğratarak (preemption) strtok çağırırsa bu statik bellek alanı ezilir ve ciddi veri bozulmalarına (race condition) yol açar.
+
+Buna karşılık Pintos'un tercih ettiği strtok_r fonksiyonu, iç durumu global bir değişken yerine çağıran fonksiyonun argüman olarak sağladığı save_ptr değişkeninde (yığın üzerinde) tutar. Böylece her iş parçacığı kendi durumunu kendi belleğinde güvenle saklar ve thread-safe yapısı sayesinde eşzamanlı çalışma sorunları tamamen ortadan kalkar.
+
+>> A4: Pintos'ta, çekirdek komutları çalıştırılabilir bir ad ve argümanlar olarak ayırır. Unix benzeri sistemlerde, kabuk bu ayrımı yapar.
+>> Unix yaklaşımının en az iki avantajını belirtin.
+CEVAP:
+1-Güvenlik ve sorumluluk ayrımı: Kernel, kullanıcıdan gelen ham argümanları doğrudan işlemez; shell önce ayrıştırır, sözdizimi hatalarını yakalar ve gerekirse dönüştürür. Bu, kernel'ı gereksiz karmaşıklıktan ve potansiyel güvenlik açıklarından korur. Kernel yalnızca temiz, doğrulanmış bir argv[] dizisi alır.
+2-Esneklik ve programlanabilirlik: Shell, $VAR gibi değişken genişletme, * gibi wildcard, pipe (|), yönlendirme (>, <), komut ikamesi ve alias gibi güçlü özellikleri user space'de uygulayabilir. Bu özellikler kernel'a hiç yük bindirmez. Bunun ötesinde shell, script dili olarak da işlev görür; kullanıcı karmaşık işlemleri tek bir komut satırına sığdırabilir. Kernel bu esnekliğin hiçbirini bilmek zorunda kalmaz.
+3-Anlamlı hata mesajları: Geçersiz bir komut ya da hatalı argüman girildiğinde shell, kernel'a hiç ulaşmadan kullanıcıya açıklayıcı bir hata mesajı verebilir. Kernel bu tür kullanıcı dostu geri bildirim mekanizmalarını uygulamak için uygun bir katman değildir; bu sorumluluk shell'e bırakıldığında hem kullanıcı deneyimi iyileşir hem de kernel kodu sadeleşir.
+
+                 SİSTEM ÇAĞRILARI
+                 ============
+
+---- VERİ YAPILARI ----
+
+>> B1: Her yeni veya değiştirilen `struct' ya da `struct' üyesi, global veya statik değişken, `typedef' ya da
+>> enumerasyonun bildirimini buraya yapın. Her birinin amacını 25 kelimeyle açıklayın.
+CEVAP:
+struct child_info — çocuk process'in TID, exit status,
+exited/waited bayrakları ve exit_sema semaforunu tutar.
+Parent, child'ın çıkış durumunu bu struct üzerinden takip eder.
+
+struct fd_entry — açık dosyayı temsil eder; int fd ve
+struct file* içerir. Thread'in fd_list listesinde tutulur.
+
+Thread struct'ına eklenen alanlar:
+- struct list children      — child_info listesi; her exec ile yeni eleman eklenir
+- struct list fd_list       — açık dosyaların listesi
+- int next_fd              — sıradaki fd numarası (2'den başlar; 0=stdin, 1=stdout ayrılmış)
+- struct file *executable   — çalışan dosya; deny_write için açık tutulur
+- int exit_status          — process çıkış kodu
+- struct child_info *my_info — bu thread'in parent'taki child_info pointer'ı
+
+Global değişken:
+- struct lock fs_lock — dosya sistemi erişimlerini serialize eden global kilit
+
+>> B2: Dosya tanımlayıcılarının açık dosyalarla nasıl ilişkilendirildiğini açıklayın.
+>> Dosya tanımlayıcıları tüm işletim sistemi genelinde mi yoksa yalnızca tek bir işlemde mi benzersizdir?
+CEVAP: 
+Her thread kendi fd_list'ini tutar. fd_entry struct'ı fd numarasını
+ve struct file*'ı birbirine bağlar. FD'ler yalnızca tek bir process
+içinde benzersizdir (process-local), tüm sistem genelinde değil.
+next_fd 2'den başlar (0=stdin, 1=stdout ayrılmıştır).
+
+---- ALGORİTMALAR ----
+
+>> B3: Çekirdekten kullanıcı verilerini okuma ve yazma kodunuzu açıklayın.
+CEVAP: 
+Kullanıcı pointer'ları check_ptr() ile doğrulanır: NULL kontrolü,
+is_user_vaddr() ile kullanıcı adresi kontrolü ve pagedir_get_page()
+ile sayfanın gerçekten map edilmiş olduğu kontrol edilir.
+Geçersizse thread -1 exit statusüyle sonlandırılır.
+String'ler için check_str() her karakteri tek tek check_ptr()'dan geçirir.
+Buffer'lar için check_buf() her byte'ı ayrı ayrı kontrol eder.
+
+>> B4: Bir sistem çağrısı, kullanıcı alanından çekirdeğe 4,096 baytlık bir veriyi kopyalıyorsa, 
+>> bu sayfa tablosunun (örneğin pagedir_get_page() çağrıları) en az ve en fazla kaç kere denetlenmesi gerektiğini açıklayın.
+>> Peki, yalnızca 2 baytlık veriyi kopyalayan bir sistem çağrısı için nasıl bir durum olur? Bu sayılar üzerinde iyileştirme yapılabilir mi?
+CEVAP:
+4096 byte için: Mevcut check_buf implementasyonumuz her byte'ı ayrı ayrı check_ptr'dan geçirdiğinden, pratikte tam olarak 4096 kez pagedir_get_page çağrılır. Teorik minimum ise verinin kaç sayfaya yayıldığına bağlıdır: tüm buffer tek bir sayfaya sığıyorsa 1 kontrol kavramsal olarak yeterlidir; sayfa sınırını aşıyorsa 2 sayfa kontrol edilmesi gerekir. Ancak mevcut kodda bu optimizasyon yapılmadığından minimum de facto olarak 4096'dır.
+İyileştirme: Her PGSIZE başına bir kontrol yapılsaydı, 4096 byte'lık buffer için yalnızca 1–2 pagedir_get_page çağrısı yeterli olurdu. Başlangıç adresinin sayfa tabanına (addr & ~PGMASK) hizalanarak kontrol edilmesi ve ardından her PGSIZE adımda tekrar kontrol edilmesi bu optimizasyonu sağlar.
+2 byte için: Buffer'ın iki byte'ı aynı sayfada ise minimum 1, farklı sayfalara yayılmışsa minimum 2 kontrol gerekir. Mevcut implementasyonda her zaman 2 kez pagedir_get_page çağrılır.
+
+>> B5: "wait" sistem çağrısının implementasyonunu kısaca açıklayın ve işlem sonlandırma ile nasıl etkileşime girdiğini belirtin.
+CEVAP:
+ process_wait(child_tid), parent'ın children listesinde child_tid'e ait
+child_info'yu arar. Bulamazsa veya zaten wait edilmişse -1 döner.
+info->waited = true yapılır. Çocuk henüz çıkmamışsa sema_down ile
+beklenir. Çocuk exit'te process_exit() içinde info->exited = true yapılır
+ve sema_up çağrılır. Parent uyanır, exit status alınır,
+child_info listeden çıkarılıp free edilir, status döndürülür.
+
+>> B6: Kullanıcı tarafından belirtilen bir adreste kullanıcı programı belleğine yapılacak her erişim, kötü bir işaretçi değeri nedeniyle başarısız olabilir.
+>> Bu tür erişimlerin işlem sonlandırılmasına yol açması gerekir. Sistem çağrıları bu tür erişimlerle doludur, örneğin "write" sistem çağrısı,
+>> sistem çağrısı numarasını kullanıcı yığından okumayı, ardından çağrının üç argümanını, sonrasında ise her türlü kullanıcı belleğini okumayı gerektirir
+>> ve bunların herhangi biri herhangi bir noktada başarısız olabilir. Bu, tasarım ve hata yönetimi sorunu oluşturur: hata yönetiminin
+>> kodun asıl işlevini gölgelemesini nasıl engellersiniz? Ayrıca, bir hata tespit edildiğinde, geçici olarak tahsis edilen tüm kaynakların
+>> (kilitler, tamponlar vb.) serbest bırakılmasını nasıl sağlarsınız? Birkaç paragrafta, bu sorunları yönetmek için benimsediğiniz stratejiyi açıklayın.
+>> Bir örnek verin.
+CEVAP:
+Pointer doğrulama, check_ptr(), check_str() ve check_buf() fonksiyonlarına soyutlandı. Syscall handler her argümanı bu fonksiyonlarla kontrol eder; böylece hata yönetimi kodu asıl iş mantığından ayrı tutulur ve her syscall fonksiyonu sadece geçerli verilerle çalışır.
+Hata tespit edildiğinde check_ptr() doğrudan thread_exit() çağırır. process_exit() çağrıldığında tüm kaynaklar sistematik olarak temizlenir: fd_list üzerindeki tüm açık dosyalar kapatılır, children listesindeki tüm child_info yapıları serbest bırakılır ve executable dosyasının write deny'ı kaldırılır. Bu merkezi temizlik mekanizması sayesinde hata nerede meydana gelirse gelsin kaynak sızıntısı oluşmaz.
+En kritik tasarım kararı fs_lock kullanımıdır. Kilit, syscall handler seviyesinde acquire ve release edilir; check_ptr ile tespit edilen bir hata thread_exit()'e ulaştığında kilit zaten release edilmiş olur. Eğer kilit check fonksiyonu içinden ya da daha alt bir katmandan alınsaydı, hata anında tutulmuş bir kilit kalırdı ve diğer thread'ler sonsuza kadar bloke olurdu (deadlock).
+Örnek: write syscall'ında önce check_buf(buf, size) çağrılır. Pointer geçersizse thread_exit(-1) tetiklenir, fs_lock hiç alınmaz ve herhangi bir kaynak sızdırılmaz. Pointer geçerliyse lock_acquire(&fs_lock) yapılır, yazma işlemi tamamlanır, lock_release(&fs_lock) çağrılır. İki yol da temiz sonlanır.
+
+---- SENKRONİZASYON ----
+
+>> B7: "exec" sistem çağrısı, yeni çalıştırılabilir dosya yüklenirse -1 döner, bu nedenle yeni çalıştırılabilir dosya yüklenmeden önce dönemez.
+>> Kodunuz bunun nasıl sağlandığını nasıl garanti eder? Yükleme başarı/durum bilgisini "exec" çağrısını yapan işleme nasıl iletirsiniz?
+CEVAP: 
+exec_helper struct'ındaki load_sema semaforu ve load_success bool alanı
+kullanılır. Parent, thread_create'den sonra sema_down(&helper->load_sema)
+ile bekler. Child (start_process), load() tamamlandıktan sonra
+helper->load_success = success yapıp sema_up(&helper->load_sema) çağırır.
+Parent uyanır, load_success false ise TID_ERROR döner.
+Bu sayede exec, child yüklenip yüklenmediğini kesin olarak öğrenmeden dönmez.
+
+>> B8: P ana işlemi ile C çocuk işlemi düşünün. P, C çıkmadan önce wait(C) çağırırken doğru senkronizasyonu ve yarış durumlarını nasıl engellersiniz?
+>> C çıktıktan sonra nasıl? Her iki durumda da tüm kaynakların serbest bırakılmasını nasıl sağlarsınız? P, beklemeden C çıkmadan önce yada 
+>> C çıktıktan sonra terminasyon yaparsa ne olur? Özel durumlar var mı?
+CEVAP:
+C çıkmadan P wait çağırırsa: P, sema_down(&info->exit_sema) ile bloke
+olur. C çıkınca process_exit() içinde info->exited = true yapılır ve
+sema_up(&info->exit_sema) çağrılır. P uyanır, exit status'u alır,
+child_info listeden çıkarılıp free edilir.
+
+C çıktıktan sonra P wait çağırırsa: C zaten info->exited = true yapmıştır.
+P, info->exited kontrolü ile sema_down'a girmez, direkt exit status'u alır.
+
+P, C'den önce çıkarsa: process_exit() tüm children listesini dolaşır
+ve her child_info'yu free eder. C çıkmaya çalışırken cur->my_info
+artık geçersiz olabilir. Kodumuzda cur->my_info != NULL kontrolü yapılarak
+bu durum güvenli şekilde ele alınır — NULL ise exit mesajı ve sema_up
+çağrılmaz, böylece dangling pointer erişimi önlenir.
+
+Çift wait: info->waited bayrağı kontrol edilir, true ise -1 döner,
+aynı child için ikinci kez wait yapılamaz.
+
+Kaynaklar: Child'ın child_info'su, parent wait'ten dönerken free edilir.
+Parent çıkarsa tüm children listesi process_exit'te free edilir.
+Hiçbir durumda kaynak sızıntısı olmaz.
+
+---- GEREKÇE ----
+
+>> B9: Kullanıcı belleğine çekirdekten erişimi, seçtiğiniz şekilde implement etmenizin nedeni nedir?
+CEVAP: 
+pagedir_get_page() ile doğrulama yaklaşımı seçildi çünkü implement etmesi
+daha basittir ve özel page fault handler gerektirmez. Her erişimden
+önce pointer geçerliliği kontrol edilir, kernel asla geçersiz adrese erişmez.
+Alternatif olan MMU tabanlı yaklaşım daha hızlı olurdu ancak
+page_fault() handler'ını değiştirmeyi gerektirirdi ve hata durumunda
+kaynakları serbest bırakmak daha karmaşık olurdu.
+
+>> B10: Dosya tanımlayıcıları tasarımınızın avantajlarını veya dezavantajlarını nasıl görüyorsunuz?
+CEVAP: 
+Avantaj: Her process kendi fd_list'ini bağlı liste olarak yönetir.
+Tasarım basit ve izole çalışır; process sonlandığında tüm açık
+dosyalar process_exit() içinde otomatik olarak kapatılır.
+
+Dezavantaj: fd_list üzerinde arama O(n) karmaşıklığındadır; 
+çok fazla dosya açıksa yavaşlayabilir. Hash map kullanılsaydı
+O(1) erişim sağlanırdı. Ayrıca next_fd geri dönüştürülmüyor,
+sadece artıyor; teorik olarak çok uzun çalışan bir process'te
+integer overflow riski oluşabilir.
+
+>> B11: Varsayılan tid_t'den pid_t'ye yapılan eşleme kimlik eşlemesidir.
+>> Eğer bunu değiştirdiyseniz, yaklaşımınızın avantajları nelerdir?
+CEVAP:
+tid_t ile pid_t arasında kimlik eşlemesi (identity mapping) kullanıldı,
+yani tid == pid. Bu yaklaşım implementasyonu basitleştirir; ayrı bir
+eşleme tablosu gerektirmez. Dezavantajı: thread ve process kavramları
+tam ayrışmaz, ileride multi-thread process desteği eklemek zorlaşır.
